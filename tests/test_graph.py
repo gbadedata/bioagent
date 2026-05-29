@@ -11,9 +11,8 @@ Tests cover:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from agent.graph import (
@@ -160,7 +159,7 @@ class TestSynthesiseReport:
 
 class TestFullGraphRun:
     def test_full_run_returns_complete_status(self, mock_pipeline_api, mock_pubmed):
-        from agent.graph import compiled_graph, run_agent
+        from agent.graph import run_agent
         with patch("agent.graph.llm") as mock_llm:
             mock_llm.invoke.return_value = AIMessage(
                 content="## Quality Report: HG001\n\nAll metrics pass thresholds."

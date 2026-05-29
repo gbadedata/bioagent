@@ -12,7 +12,6 @@ PubMed tool is tested with mocked Bio.Entrez calls.
 from __future__ import annotations
 
 import httpx
-import pytest
 import respx
 
 from agent.tools import (
@@ -22,13 +21,6 @@ from agent.tools import (
     get_pipeline_runs,
     get_reproducibility,
     search_pubmed,
-)
-from tests.conftest import (
-    SAMPLE_ALERTS,
-    SAMPLE_CONCORDANCE_RESULTS,
-    SAMPLE_CONCORDANCE_SUMMARY,
-    SAMPLE_REPRODUCIBILITY,
-    SAMPLE_RUNS,
 )
 
 

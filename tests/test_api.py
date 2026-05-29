@@ -11,12 +11,7 @@ Tests cover:
 
 from __future__ import annotations
 
-import time
-from unittest.mock import patch
-
-import pytest
 from fastapi.testclient import TestClient
-from langchain_core.messages import AIMessage
 
 from api.main import app
 

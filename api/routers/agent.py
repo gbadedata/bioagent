@@ -49,7 +49,6 @@ class ResultResponse(BaseModel):
 
 def _run_agent_job(job_id: str, sample_id: str, task: str) -> None:
     """Execute the agent in a thread pool. Updates the job store when complete."""
-    import os
     from dotenv import load_dotenv
     load_dotenv()
 

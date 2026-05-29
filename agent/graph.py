@@ -19,17 +19,18 @@ Key design decisions:
 from __future__ import annotations
 
 import os
+
 from dotenv import load_dotenv
+
 load_dotenv()
 import logging
-from datetime import datetime, timezone
-from typing import Annotated, Any
+from datetime import UTC, datetime
+from typing import Annotated
 
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
 from typing_extensions import TypedDict
 
 from .prompts import ANALYSE_PROMPT, DEGRADATION_MESSAGE, KEYWORD_STRATEGY, SYSTEM_PROMPT
@@ -114,11 +115,16 @@ def fetch_data(state: AgentState) -> dict:
 
     # Track failures
     new_failed = []
-    if not runs_result.get("success"):   new_failed.append("get_pipeline_runs")
-    if not conc_summary.get("success"):  new_failed.append("get_concordance_summary")
-    if not conc_details.get("success"):  new_failed.append("get_concordance_results")
-    if not repro_result.get("success"):  new_failed.append("get_reproducibility")
-    if not alerts_result.get("success"): new_failed.append("get_active_alerts")
+    if not runs_result.get("success"):
+        new_failed.append("get_pipeline_runs")
+    if not conc_summary.get("success"):
+        new_failed.append("get_concordance_summary")
+    if not conc_details.get("success"):
+        new_failed.append("get_concordance_results")
+    if not repro_result.get("success"):
+        new_failed.append("get_reproducibility")
+    if not alerts_result.get("success"):
+        new_failed.append("get_active_alerts")
 
     return {
         "runs_data":            runs_result   if runs_result.get("success")   else None,
@@ -279,7 +285,7 @@ def synthesise_report(state: AgentState) -> dict:
         citations_text = "No PubMed citations retrieved."
 
     run_count = runs.get("count", 0) if runs else 0
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     tools_called = ", ".join(state.get("tools_called", []))
 
     prompt = ANALYSE_PROMPT.format(

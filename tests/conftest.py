@@ -9,12 +9,11 @@ All external calls are mocked:
 
 from __future__ import annotations
 
-import json
-import pytest
-import respx
-import httpx
 from unittest.mock import MagicMock, patch
 
+import httpx
+import pytest
+import respx
 
 # ─── Sample API response fixtures ─────────────────────────────────────────────
 

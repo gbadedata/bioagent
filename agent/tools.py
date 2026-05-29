@@ -11,13 +11,13 @@ That is the LLM's job.
 
 from __future__ import annotations
 
-import os
 import logging
+import os
 from typing import Any
 
 import httpx
-from langchain_core.tools import tool
 from Bio import Entrez
+from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
 
