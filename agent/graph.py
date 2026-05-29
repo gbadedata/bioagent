@@ -19,6 +19,8 @@ Key design decisions:
 from __future__ import annotations
 
 import os
+from dotenv import load_dotenv
+load_dotenv()
 import logging
 from datetime import datetime, timezone
 from typing import Annotated, Any
@@ -35,7 +37,7 @@ from .tools import ALL_TOOLS
 
 logger = logging.getLogger(__name__)
 
-MODEL = os.environ.get("AGENT_MODEL", "claude-sonnet-4-20250514")
+MODEL = os.environ.get("AGENT_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS = int(os.environ.get("AGENT_MAX_TOKENS", "4096"))
 MAX_PUBMED_RETRIES = int(os.environ.get("AGENT_MAX_PUBMED_RETRIES", "2"))
 MAX_FETCH_RETRIES  = int(os.environ.get("AGENT_MAX_FETCH_RETRIES",  "1"))
@@ -76,6 +78,7 @@ llm = ChatAnthropic(
     model=MODEL,
     max_tokens=MAX_TOKENS,
     temperature=0,
+    api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
 )
 
 llm_with_tools = llm.bind_tools(ALL_TOOLS)
