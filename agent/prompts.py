@@ -34,7 +34,7 @@ RULES:
 - Be concise in tool calls. Be thorough in the final report.
 """
 
-ANALYSE_PROMPT = """You have collected the following data for sample {sample_id}:
+REPORT_PROMPT = """You have collected the following data for sample {sample_id}:
 
 PIPELINE RUNS:
 {runs_summary}
@@ -54,6 +54,9 @@ ACTIVE ALERTS:
 PUBMED CITATIONS:
 {citations}
 
+PUBMED ABSTRACTS (ground the Literature Context in these; do not reference papers whose abstracts are not shown here):
+{pubmed_abstracts}
+
 Now write a structured quality report. Use this exact format:
 
 ## Quality Report: {sample_id}
@@ -71,7 +74,7 @@ Now write a structured quality report. Use this exact format:
 [List any Westgard violations or threshold breaches. If none, state clearly.]
 
 ### Literature Context
-[Cite relevant PubMed papers by PMID. Explain how they support or contextualise the findings.]
+[Cite relevant PubMed papers by PMID, drawing only on the abstracts provided above. Explain how they support or contextualise the findings. If no abstracts were retrieved, say so rather than inventing relevance.]
 
 ### Recommendations
 [Specific, actionable steps. Number them.]

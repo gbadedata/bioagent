@@ -33,8 +33,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
-from .prompts import ANALYSE_PROMPT, DEGRADATION_MESSAGE, KEYWORD_STRATEGY, SYSTEM_PROMPT
-from .tools import ALL_TOOLS
+from .prompts import DEGRADATION_MESSAGE, KEYWORD_STRATEGY, REPORT_PROMPT, SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +46,7 @@ MAX_FETCH_RETRIES  = int(os.environ.get("AGENT_MAX_FETCH_RETRIES",  "1"))
 # ─── State ────────────────────────────────────────────────────────────────────
 
 class AgentState(TypedDict):
-    # Conversation messages — add_messages merges rather than overwrites
+    # Conversation messages - add_messages merges rather than overwrites
     messages: Annotated[list, add_messages]
 
     # Core inputs
@@ -61,6 +60,8 @@ class AgentState(TypedDict):
     reproducibility_data: dict | None
     alerts_data:          list | None
     pubmed_citations:     list | None
+    pubmed_query:         str | None
+    pubmed_abstracts:     str | None
 
     # Control flow
     fetch_retries:   int
@@ -81,8 +82,6 @@ llm = ChatAnthropic(
     temperature=0,
     api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
 )
-
-llm_with_tools = llm.bind_tools(ALL_TOOLS)
 
 
 # ─── Node: fetch_data ─────────────────────────────────────────────────────────
@@ -134,7 +133,7 @@ def fetch_data(state: AgentState) -> dict:
         "alerts_data":          alerts_result.get("data") if alerts_result.get("success") else [],
         "failed_tools":         failed + new_failed,
         "tools_called":         tools_called,
-        "fetch_retries":        state.get("fetch_retries", 0),
+        "fetch_retries":        state.get("fetch_retries", 0) + 1,
     }
 
 
@@ -151,10 +150,10 @@ def route_after_fetch(state: AgentState) -> str:
     critical = {"get_concordance_summary", "get_pipeline_runs"}
     critical_failed = critical.intersection(set(failed))
 
-    if critical_failed and fetch_retries >= MAX_FETCH_RETRIES:
+    if critical_failed and fetch_retries > MAX_FETCH_RETRIES:
         return "graceful_degradation"
 
-    if critical_failed and fetch_retries < MAX_FETCH_RETRIES:
+    if critical_failed and fetch_retries <= MAX_FETCH_RETRIES:
         return "fetch_data"
 
     return "analyse"
@@ -186,12 +185,12 @@ def analyse(state: AgentState) -> dict:
     response = llm.invoke([HumanMessage(content=keyword_prompt)])
     pubmed_query = response.content.strip().strip('"')
 
-    logger.info("analyse_complete", pubmed_query=pubmed_query, findings=findings)
+    logger.info("analyse complete: pubmed_query=%s | findings=%s", pubmed_query, findings)
 
     return {
         "messages": [AIMessage(content=f"Analysis complete. PubMed query: {pubmed_query}")],
         "tools_called": state.get("tools_called", []) + ["analyse"],
-        "_pubmed_query": pubmed_query,
+        "pubmed_query": pubmed_query,
     }
 
 
@@ -206,13 +205,7 @@ def search_literature(state: AgentState) -> dict:
     from .tools import search_pubmed
 
     pubmed_retries = state.get("pubmed_retries", 0)
-
-    # Extract query from last AIMessage
-    query = "germline variant calling quality validation clinical"
-    for msg in reversed(state.get("messages", [])):
-        if isinstance(msg, AIMessage) and "PubMed query:" in msg.content:
-            query = msg.content.split("PubMed query:")[-1].strip()
-            break
+    query = state.get("pubmed_query") or "germline variant calling quality validation clinical"
 
     result = search_pubmed.invoke({"query": query, "max_results": 5})
 
@@ -221,6 +214,7 @@ def search_literature(state: AgentState) -> dict:
     if result.get("success") and result.get("data"):
         return {
             "pubmed_citations": result["data"],
+            "pubmed_abstracts": result.get("abstracts_preview", ""),
             "pubmed_retries":   pubmed_retries,
             "tools_called":     tools_called,
             "messages": [AIMessage(content=f"PubMed: {result['summary']}")],
@@ -233,6 +227,7 @@ def search_literature(state: AgentState) -> dict:
         if result2.get("success") and result2.get("data"):
             return {
                 "pubmed_citations": result2["data"],
+                "pubmed_abstracts": result2.get("abstracts_preview", ""),
                 "pubmed_retries":   pubmed_retries + 1,
                 "tools_called":     tools_called + ["search_pubmed_retry"],
                 "messages": [AIMessage(content=f"PubMed retry: {result2['summary']}")],
@@ -241,6 +236,7 @@ def search_literature(state: AgentState) -> dict:
     # Proceed without citations
     return {
         "pubmed_citations": [],
+        "pubmed_abstracts": "",
         "pubmed_retries":   pubmed_retries + 1,
         "tools_called":     tools_called,
         "messages": [AIMessage(content="No relevant PubMed results found. Proceeding without citations.")],
@@ -284,11 +280,13 @@ def synthesise_report(state: AgentState) -> dict:
     else:
         citations_text = "No PubMed citations retrieved."
 
+    abstracts_text = state.get("pubmed_abstracts") or "No abstracts retrieved."
+
     run_count = runs.get("count", 0) if runs else 0
     timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     tools_called = ", ".join(state.get("tools_called", []))
 
-    prompt = ANALYSE_PROMPT.format(
+    prompt = REPORT_PROMPT.format(
         sample_id=sample_id,
         runs_summary=runs_summary,
         concordance_summary=conc_summary,
@@ -296,6 +294,7 @@ def synthesise_report(state: AgentState) -> dict:
         reproducibility_summary=repro_summary,
         alerts_summary=alerts_summary,
         citations=citations_text,
+        pubmed_abstracts=abstracts_text,
         run_count=run_count,
         timestamp=timestamp,
         tools_called=tools_called,
@@ -365,7 +364,7 @@ def build_graph() -> StateGraph:
     return graph.compile()
 
 
-# Compiled graph — imported by API and dashboard
+# Compiled graph - imported by API and dashboard
 compiled_graph = build_graph()
 
 
@@ -384,6 +383,8 @@ def run_agent(sample_id: str, task: str = "full_analysis") -> dict:
         "reproducibility_data": None,
         "alerts_data":        None,
         "pubmed_citations":   None,
+        "pubmed_query":       None,
+        "pubmed_abstracts":   None,
         "fetch_retries":      0,
         "pubmed_retries":     0,
         "failed_tools":       [],

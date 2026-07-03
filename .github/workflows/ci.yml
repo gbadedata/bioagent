@@ -40,7 +40,6 @@ jobs:
           PIPELINE_API_BASE: http://localhost:8000
         run: |
           pytest tests/ -v --tb=short \
-            --ignore=tests/test_graph.py \
             --cov=agent --cov=api \
             --cov-report=xml
 
@@ -64,7 +63,7 @@ jobs:
       - name: Build Docker image
         run: docker build -t bioagent:ci .
 
-      - name: Smoke test — import succeeds
+      - name: Smoke test: import succeeds
         run: |
           docker run --rm \
             -e ANTHROPIC_API_KEY="test-key" \

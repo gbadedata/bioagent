@@ -68,6 +68,13 @@ class TestFetchData:
         result = fetch_data(state)
         assert result["alerts_data"] == []
 
+    def test_fetch_increments_retry_counter(self, mock_pipeline_api):
+        # regression: the counter must advance so the retry budget is finite and
+        # graceful degradation can eventually fire when the API stays down
+        state = _base_state()
+        state["fetch_retries"] = 0
+        assert fetch_data(state)["fetch_retries"] == 1
+
 
 class TestRouteAfterFetch:
     def test_routes_to_analyse_when_data_present(self, mock_pipeline_api):
@@ -80,7 +87,7 @@ class TestRouteAfterFetch:
     def test_routes_to_degradation_when_critical_tools_fail_and_retries_exhausted(self):
         state = _base_state()
         state["failed_tools"]  = ["get_concordance_summary", "get_pipeline_runs"]
-        state["fetch_retries"] = 1  # MAX_FETCH_RETRIES = 1
+        state["fetch_retries"] = 2  # past MAX_FETCH_RETRIES (1): the one retry has been spent
         route = route_after_fetch(state)
         assert route == "graceful_degradation"
 

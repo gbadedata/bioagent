@@ -20,7 +20,7 @@ from pydantic import BaseModel
 router   = APIRouter()
 executor = ThreadPoolExecutor(max_workers=4)
 
-# In-memory job store — sufficient for portfolio/local use
+# In-memory job store - sufficient for portfolio/local use
 # Production would use Redis or a database
 _jobs: dict[str, dict] = {}
 

@@ -1,5 +1,5 @@
 """
-BioAgent tools — six deterministic functions that call external APIs.
+BioAgent tools - six deterministic functions that call external APIs.
 
 Each tool returns a structured dict with a 'success' flag.
 On failure, 'error' contains a human-readable explanation.

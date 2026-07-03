@@ -1,5 +1,5 @@
 """
-BioAgent — Streamlit Chat Interface
+BioAgent - Streamlit Chat Interface
 
 Three conversation modes:
   1. Analyse a sample:  'analyse HG001'
@@ -201,7 +201,7 @@ if prompt:
 
                 st.markdown(report)
 
-                # Tool trace — human-readable summaries only
+                # Tool trace - human-readable summaries only
                 trace_steps = [
                     {"tool": tool, "summary": f"Called successfully"}
                     for tool in tools

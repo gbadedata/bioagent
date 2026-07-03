@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="BioAgent API",
-    description="Autonomous bioinformatics AI analyst — LangGraph + Claude",
+    description="Autonomous bioinformatics AI analyst - LangGraph + Claude",
     version="1.0.0",
     lifespan=lifespan,
 )

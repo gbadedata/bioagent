@@ -1,11 +1,16 @@
 # BioAgent
 
-An autonomous bioinformatics AI analyst built with LangGraph and Claude. Given a sample ID, BioAgent fetches live concordance and reproducibility data from the Biomarker Concordance Pipeline API, reasons about the findings, conditionally searches PubMed for relevant literature, and produces a structured clinical-grade quality report -- streamed in real time through a Streamlit chat interface.
+An autonomous bioinformatics AI analyst built with LangGraph and Claude. Given a sample ID,
+BioAgent fetches live concordance and reproducibility data from the Biomarker Concordance
+Pipeline API, reasons about the findings, conditionally searches PubMed for relevant
+literature, and produces a structured clinical-grade quality report, streamed in real time
+through a Streamlit chat interface.
 
 [![CI](https://github.com/gbadedata/bioagent/actions/workflows/ci.yml/badge.svg)](https://github.com/gbadedata/bioagent/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
 ![LangGraph](https://img.shields.io/badge/LangGraph-0.2%2B-purple)
-![Claude](https://img.shields.io/badge/Claude-Sonnet%204-orange)
+![Claude](https://img.shields.io/badge/Claude-Sonnet%204.6-orange)
+![Tests](https://img.shields.io/badge/tests-45%20passing-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 ---
@@ -13,82 +18,115 @@ An autonomous bioinformatics AI analyst built with LangGraph and Claude. Given a
 ## Table of contents
 
 - [What this project does](#what-this-project-does)
+- [What a run produces](#what-a-run-produces)
 - [Why LangGraph and not a simple agent](#why-langgraph-and-not-a-simple-agent)
 - [Architecture](#architecture)
+- [A run, end to end](#a-run-end-to-end)
 - [The graph in detail](#the-graph-in-detail)
 - [Tools](#tools)
 - [PubMed keyword strategy](#pubmed-keyword-strategy)
 - [Graceful degradation](#graceful-degradation)
-- [Streaming and the async/Streamlit challenge](#streaming-and-the-asyncstreamlit-challenge)
+- [Streaming and the async and Streamlit challenge](#streaming-and-the-async-and-streamlit-challenge)
 - [Quick start](#quick-start)
 - [API reference](#api-reference)
 - [Dashboard](#dashboard)
-- [CI pipeline](#ci-pipeline)
-- [Development](#development)
+- [Continuous integration](#continuous-integration)
+- [Testing](#testing)
 - [Design decisions](#design-decisions)
 - [Companion project](#companion-project)
+- [Licence](#licence)
 
 ---
 
 ## What this project does
 
-BioAgent does three things autonomously -- without human intervention at each step:
+BioAgent does three things autonomously, without human intervention at each step:
 
-**Quality report generation.** Fetches concordance and reproducibility data from the Biomarker Concordance Pipeline API, interprets metrics against GIAB HG001 v4.2.1 benchmarks, and writes a structured Markdown QC report.
+**Quality report generation.** Fetches concordance and reproducibility data from the
+Biomarker Concordance Pipeline API, interprets metrics against GIAB HG001 v4.2.1 benchmarks,
+and writes a structured Markdown QC report.
 
-**Anomaly detection and explanation.** Identifies runs below threshold, reasons about likely causes using Claude, and recommends specific remediation actions.
+**Anomaly detection and explanation.** Identifies runs below threshold, reasons about likely
+causes using Claude, and recommends specific remediation actions.
 
-**Literature-contextualised interpretation.** Constructs targeted PubMed search queries derived from the actual metric values, retrieves relevant papers, and cites them in the report.
+**Literature-contextualised interpretation.** Constructs targeted PubMed search queries
+derived from the actual metric values, retrieves the papers and their abstracts, and grounds
+the report's literature section in what those abstracts actually say.
+
+## What a run produces
+
+A single `analyse HG001` produces a full quality report with executive summary, concordance
+and reproducibility analysis, grounded literature context, numbered recommendations, and a
+data-provenance footer, alongside an expandable trace of every tool the agent called.
+
+![BioAgent quality report generated from a live pipeline run](docs/evidence/bioagent_full_report.png)
 
 ---
 
 ## Why LangGraph and not a simple agent
 
-A simple LangChain agent with a tools list processes one question and stops. BioAgent needs to do multi-step conditional reasoning:
+A simple LangChain agent with a tools list processes one question and stops. BioAgent needs
+to do multi-step conditional reasoning:
 
-- Fetch API data, then decide based on what it finds whether to search literature
-- If PubMed returns irrelevant results, reformulate the query and retry
-- If the pipeline API is unreachable, degrade gracefully rather than hallucinating
+- Fetch API data, then decide based on what it finds whether to search literature.
+- If PubMed returns irrelevant results, reformulate the query and retry.
+- If the pipeline API is unreachable, degrade gracefully rather than inventing data.
 
-This requires a stateful graph with cycles and conditional routing -- exactly what LangGraph provides. LangGraph models the agent as a directed graph where each node is a reasoning or action step, and conditional edges determine which node runs next based on the current state.
+This requires a stateful graph with cycles and conditional routing, which is exactly what
+LangGraph provides. LangGraph models the agent as a directed graph where each node is a
+reasoning or action step, and conditional edges decide which node runs next based on the
+current state.
 
-The key distinction: LangGraph agents are bounded. Every cycle has a maximum retry count. The graph cannot loop indefinitely. This is a critical property for a system that consumes paid API credit.
+The key property is that the graph is **bounded**. Every cycle has a maximum retry count and
+the graph cannot loop indefinitely, which matters for a system that consumes paid API credit.
 
 ---
 
 ## Architecture
 
-```
-User input (sample_id)
-        |
-        v
-  [ fetch_data ]  -- calls 5 pipeline API tools in sequence
-        |
-        +-- critical tools failed AND retries exhausted
-        |         |
-        |         v
-        |   [ graceful_degradation ] --> END
-        |
-        +-- critical tools failed AND retries remain
-        |         |
-        |         +---> [ fetch_data ]  (cycle, max 1 retry)
-        |
-        +-- data collected
-              |
-              v
-         [ analyse ]  -- LLM constructs PubMed search query from metric values
-              |
-              v
-   [ search_literature ]  -- calls PubMed, retries with broader query if empty
-              |             (max 2 retries)
-              v
-   [ synthesise_report ]  -- LLM writes structured QC report from all data
-              |
-              v
-             END
+One typed state object flows through five nodes. Deterministic tools gather data; the LLM
+reasons, and a conditional router decides the path, including a bounded retry cycle and a
+graceful-degradation exit.
+
+```mermaid
+flowchart TD
+    START([sample_id]) --> FETCH["fetch_data<br/>call 5 pipeline API tools"]
+    FETCH -->|data collected| ANALYSE["analyse<br/>LLM builds a targeted PubMed query"]
+    FETCH -->|"critical tools failed,<br/>retry budget remains"| FETCH
+    FETCH -->|"critical tools failed,<br/>retries spent"| DEGRADE["graceful_degradation<br/>report what failed, invent nothing"]
+    ANALYSE --> SEARCH["search_literature<br/>query PubMed, broaden and retry if empty"]
+    SEARCH --> REPORT["synthesise_report<br/>LLM writes the QC report"]
+    REPORT --> DONE([END])
+    DEGRADE --> DONE
 ```
 
-The report synthesis step is pure LLM reasoning -- not a tool call. This distinction matters: tools do deterministic things (call APIs, query databases). The LLM interprets, explains, and writes.
+The report synthesis step is pure LLM reasoning, not a tool call. Tools do deterministic
+things (call APIs, query databases); the LLM interprets, explains, and writes.
+
+## A run, end to end
+
+```mermaid
+sequenceDiagram
+    participant U as User / API
+    participant G as LangGraph
+    participant P as Pipeline API
+    participant C as Claude
+    participant L as PubMed
+    U->>G: analyse(sample_id)
+    G->>P: runs, concordance, reproducibility, alerts
+    P-->>G: metrics (or structured errors)
+    alt critical data still missing after a retry
+        G-->>U: graceful-degradation report (no invented data)
+    else data collected
+        G->>C: build a PubMed query from the metric values
+        C-->>G: query
+        G->>L: search, broaden and retry if empty
+        L-->>G: citations and abstracts
+        G->>C: synthesise the QC report from data and abstracts
+        C-->>G: structured report
+        G-->>U: report, citations, and tool trace
+    end
+```
 
 ---
 
@@ -108,7 +146,9 @@ class AgentState(TypedDict):
     concordance_details:  list | None    # From get_concordance_results
     reproducibility_data: dict | None    # From get_reproducibility
     alerts_data:          list | None    # From get_active_alerts
-    pubmed_citations:     list | None    # From search_pubmed
+    pubmed_citations:     list | None    # PMIDs and URLs from search_pubmed
+    pubmed_query:         str | None     # Query the analyse node constructed
+    pubmed_abstracts:     str | None     # Abstract text used to ground the report
     fetch_retries:        int            # Bounded at MAX_FETCH_RETRIES (1)
     pubmed_retries:       int            # Bounded at MAX_PUBMED_RETRIES (2)
     failed_tools:         list[str]      # Tools that returned errors
@@ -119,17 +159,19 @@ class AgentState(TypedDict):
 
 ### Conditional routing
 
-After `fetch_data`, the router inspects state to decide the next node:
+After `fetch_data`, the router inspects state to decide the next node. `fetch_data`
+increments `fetch_retries` on every attempt, so the retry budget is finite and the
+degradation exit is always reachable when the API stays down:
 
 ```python
 def route_after_fetch(state: AgentState) -> str:
     critical = {"get_concordance_summary", "get_pipeline_runs"}
     critical_failed = critical.intersection(set(state["failed_tools"]))
 
-    if critical_failed and state["fetch_retries"] >= MAX_FETCH_RETRIES:
+    if critical_failed and state["fetch_retries"] > MAX_FETCH_RETRIES:
         return "graceful_degradation"
-    if critical_failed and state["fetch_retries"] < MAX_FETCH_RETRIES:
-        return "fetch_data"          # cycle back
+    if critical_failed and state["fetch_retries"] <= MAX_FETCH_RETRIES:
+        return "fetch_data"          # retry, bounded by MAX_FETCH_RETRIES
     return "analyse"
 ```
 
@@ -137,7 +179,9 @@ def route_after_fetch(state: AgentState) -> str:
 
 ## Tools
 
-Six deterministic functions. Each returns a structured dict with a `success` flag. The agent uses these flags for routing decisions. No tool does any reasoning -- that is the LLM's job.
+Six deterministic functions. Each returns a structured dict with a `success` flag, and the
+agent uses those flags for routing decisions. No tool does any reasoning; that is the LLM's
+job.
 
 | Tool | Endpoint | On failure |
 |---|---|---|
@@ -146,15 +190,19 @@ Six deterministic functions. Each returns a structured dict with a `success` fla
 | `get_concordance_results` | `GET /api/v1/concordance?limit=50` | Returns structured error |
 | `get_reproducibility` | `GET /api/v1/reproducibility/{id}/latest` | Returns structured error |
 | `get_active_alerts` | `GET /api/v1/alerts?unresolved_only=true` | Returns structured error |
-| `search_pubmed` | NCBI Entrez esearch + efetch | Returns `{"success": True, "data": []}` with explanation |
+| `search_pubmed` | NCBI Entrez esearch and efetch | Returns `{"success": True, "data": []}` with an explanation |
 
-All tools use a 10-second timeout. Connection errors, timeouts, and HTTP errors are all caught and returned as structured errors rather than exceptions.
+All pipeline tools use a 10-second timeout. Connection errors, timeouts, and HTTP errors are
+caught and returned as structured errors rather than raised as exceptions. `search_pubmed`
+returns the PMIDs, URLs, and abstract text, and that abstract text is what the report's
+literature section is grounded in.
 
 ---
 
 ## PubMed keyword strategy
 
-The `analyse` node constructs PubMed search queries from actual metric values, not generic terms. This ensures citations are relevant to the specific findings.
+The `analyse` node constructs PubMed search queries from actual metric values, not generic
+terms, so citations are relevant to the specific findings.
 
 | Finding | Query constructed |
 |---|---|
@@ -164,20 +212,25 @@ The `analyse` node constructs PubMed search queries from actual metric values, n
 | VAF CV above 15% | `variant allele frequency technical variation replicate` |
 | All metrics passing | `germline variant calling quality validation clinical` |
 
-**Fallback strategy:** If the constructed query returns zero results, the agent retries with `germline variant calling sequencing quality` (broader). If that also returns nothing, it proceeds without citations rather than citing irrelevant papers. Maximum 2 retries total.
+**Fallback strategy.** If the constructed query returns zero results, the agent retries with
+a broader `germline variant calling sequencing quality`. If that also returns nothing, it
+proceeds without citations rather than citing irrelevant papers. Two retries at most.
 
 ---
 
 ## Graceful degradation
 
-If the Biomarker Concordance Pipeline API is unreachable, BioAgent does not hallucinate. It enters the `graceful_degradation` node which:
+If the Biomarker Concordance Pipeline API is unreachable, BioAgent does not invent data. The
+retry budget is spent, and the graph routes to the `graceful_degradation` node, which:
 
-1. Reports exactly which tools failed and why
-2. Lists what data could not be retrieved
-3. Tells the user to start the API with the exact command
-4. Exits cleanly
+1. Reports exactly which tools failed and why.
+2. Lists what data could not be retrieved.
+3. Tells the user how to start the API, with the exact command.
+4. Exits cleanly.
 
-The report never contains invented metric values. A system that generates clinical-looking reports based on no data is dangerous.
+The report never contains invented metric values. A system that generates clinical-looking
+reports from no data is dangerous, so this path is covered by a regression test that asserts
+the degraded report contains no fabricated metrics.
 
 ```
 I was unable to complete the analysis for sample HG001.
@@ -196,9 +249,10 @@ To start the API, run this in your terminal:
 
 ---
 
-## Streaming and the async/Streamlit challenge
+## Streaming and the async and Streamlit challenge
 
-Streamlit's execution model reruns the entire script on each user interaction. Running an async LangGraph stream inside Streamlit hits `RuntimeError: This event loop is already running` immediately.
+Streamlit reruns the entire script on each user interaction. Running an async LangGraph
+stream inside Streamlit hits `RuntimeError: This event loop is already running` immediately.
 
 The solution is `nest_asyncio` combined with running the agent in a separate thread:
 
@@ -209,14 +263,16 @@ nest_asyncio.apply()
 thread = threading.Thread(target=_run_agent, daemon=True)
 thread.start()
 
-# Animate progress while agent runs
+# Animate progress while the agent runs
 while thread.is_alive():
     status_placeholder.info(f"Running: {steps[step_idx % len(steps)]}...")
     time.sleep(1.5)
     step_idx += 1
 ```
 
-The progress animation runs in the main Streamlit thread while the agent runs in a daemon thread. When the agent completes, the result is written to a shared dict and the main thread renders it.
+The progress animation runs in the main Streamlit thread while the agent runs in a daemon
+thread. When the agent completes, the result is written to a shared dict and the main thread
+renders it.
 
 ---
 
@@ -225,7 +281,7 @@ The progress animation runs in the main Streamlit thread while the agent runs in
 ### Prerequisites
 
 - Python 3.12
-- Biomarker Concordance Pipeline API running on port 8000 (see companion project)
+- Biomarker Concordance Pipeline API running on port 8000 (see the companion project)
 - Anthropic API key from `https://console.anthropic.com`
 
 ### Installation
@@ -328,90 +384,97 @@ List all submitted jobs and their statuses.
 {"status": "ok", "service": "bioagent", "version": "1.0.0"}
 ```
 
-**Authentication note:** No authentication is implemented. This is intentional for local portfolio use. Production deployment requires an `X-API-Key` header validated against a secrets store.
+**Authentication note.** No authentication is implemented; this is intentional for local
+portfolio use. A production deployment would require an `X-API-Key` header validated against
+a secrets store.
 
 ---
 
 ## Dashboard
 
-The Streamlit dashboard supports three conversation modes:
+The Streamlit dashboard supports three conversation modes.
 
-**Mode 1 -- Analyse a sample:**
+**Analyse a sample.**
 ```
 User:  analyse HG001
-Agent: [progress animation while agent runs]
+Agent: [progress animation while the agent runs]
        [full quality report with PubMed citations]
        [expandable tool call trace]
 ```
 
-**Mode 2 -- Ask a follow-up:**
+**Ask a follow-up.**
 ```
 User:  why is the indel F1 lower than the SNV F1?
 Agent: [retrieves concordance data, reasons about indel calling difficulty, cites literature]
 ```
 
-**Mode 3 -- Threshold query:**
+**Threshold query.**
 ```
 User:  what would happen if I set the minimum indel F1 to 0.97?
-Agent: [reasons about current indel F1 of 0.9656, explains it would fail, recommends action]
+Agent: [reasons about the current indel F1 of 0.9656, explains it would fail, recommends action]
 ```
 
-**Cost guardrail:** The dashboard tracks runs per session and warns after 20 analyses (approximately $1.00 in API credit). This prevents accidental credit drain during a demo.
+**Cost guardrail.** The dashboard tracks runs per session and warns after 20 analyses
+(roughly one dollar in API credit), which prevents accidental credit drain during a demo.
 
-**Tool call trace:** Every response includes an expandable panel showing each tool called and a human-readable summary of what it returned. Raw API responses including internal UUIDs and timestamps are never shown to the user.
+**Tool call trace.** Every response includes an expandable panel showing each tool called and
+a human-readable summary of what it returned. Raw API responses, including internal UUIDs and
+timestamps, are never shown to the user.
 
 ---
 
-## CI pipeline
+## Continuous integration
 
-```
-Lint and test (runs on every push)
-    Set up Python 3.12
-    Install all dependencies
-    Lint with ruff
-    Run tests (tools and API, LLM mocked)
+Every push runs lint and the full test suite (agent graph, tools, and API, with the LLM, the
+pipeline API, and PubMed all mocked), then builds the Docker image and smoke-tests that it
+imports. The graph tests run alongside the rest, since they are fully mocked and need no API
+key or network.
 
-Docker build (runs after lint-and-test)
-    Build multi-stage Dockerfile
-    Smoke test -- import succeeds
-```
-
-The graph tests are excluded from CI because they require a full LangGraph state machine with mocked LLM, which adds complexity without value in a headless environment. Run them locally with `pytest tests/test_graph.py`.
+![Continuous integration passing](docs/evidence/bioagent_ci_green.png)
 
 ---
 
-## Development
+## Testing
 
 ```bash
-# Run all tests
-pytest tests/ -v --tb=short
-
-# Run only tool tests (no mocked LLM needed)
-pytest tests/test_tools.py -v
-
-# Run graph tests (mocked LLM)
-pytest tests/test_graph.py -v
-
-# Lint
-ruff check agent/ api/ tests/
-
-# Run dashboard in development mode
-streamlit run dashboard/app.py --server.port 8501
+pytest tests/ -v --tb=short        # 45 tests: graph, tools, API
+pytest tests/test_tools.py -v      # tools only, no mocked LLM needed
+pytest tests/test_graph.py -v      # the agent graph, LLM mocked
+ruff check agent/ api/ tests/      # lint
 ```
+
+The suite covers the tools and their error handling, the FastAPI endpoints, and the graph
+end to end with a mocked model, including the bounded retry cycle and a regression test that
+the API-down path degrades gracefully rather than looping.
 
 ---
 
 ## Design decisions
 
-**Why LangGraph over a plain LangChain agent?** Plain agents process one turn and stop. LangGraph supports cycles, conditional routing, and bounded retries. For an agent that needs to retry failed tool calls and reformulate search queries based on results, a graph is the correct abstraction.
+**Why LangGraph over a plain LangChain agent?** Plain agents process one turn and stop.
+LangGraph supports cycles, conditional routing, and bounded retries. For an agent that needs
+to retry failed tool calls and reformulate search queries based on results, a graph is the
+correct abstraction.
 
-**Why separate the API from the dashboard?** The FastAPI endpoint is what a production pipeline scheduler would call -- a programmatic interface with job IDs and polling. The Streamlit dashboard is what a scientist would use interactively. Keeping them separate means each can be deployed independently.
+**Why separate the API from the dashboard?** The FastAPI endpoint is what a production
+pipeline scheduler would call: a programmatic interface with job IDs and polling. The
+Streamlit dashboard is what a scientist would use interactively. Keeping them separate lets
+each be deployed independently.
 
-**Why background tasks in the API instead of synchronous execution?** A full agent run takes 15 to 30 seconds. Default HTTP clients time out at 30 seconds. Returning a job ID immediately (HTTP 202) and polling for results avoids timeout errors and is the correct pattern for long-running operations.
+**Why background tasks in the API instead of synchronous execution?** A full agent run takes
+15 to 30 seconds, and default HTTP clients time out at 30 seconds. Returning a job ID
+immediately (HTTP 202) and polling for the result avoids timeout errors and is the right
+pattern for long-running operations.
 
-**Why `nest_asyncio` instead of a native async Streamlit solution?** Streamlit does not natively support async execution at the script level. `nest_asyncio` patches the running event loop to allow nested `asyncio.run()` calls. Combined with threading, this is the cleanest solution that does not require restructuring the entire application.
+**Why `nest_asyncio` instead of a native async Streamlit solution?** Streamlit does not
+natively support async execution at the script level. `nest_asyncio` patches the running
+event loop to allow nested `asyncio.run()` calls; combined with threading, this is the
+cleanest solution that does not require restructuring the application.
 
-**Why bounded retries instead of dynamic termination?** Dynamic termination (stop when the LLM says it has enough data) requires an additional LLM call per cycle to evaluate completeness. Bounded retries (stop after N attempts regardless) are deterministic, cheaper, and safer. For a system consuming paid API credit, deterministic behaviour is essential.
+**Why bounded retries instead of dynamic termination?** Dynamic termination (stop when the
+LLM decides it has enough data) needs an extra LLM call per cycle to judge completeness.
+Bounded retries stop after a fixed number of attempts, which is deterministic, cheaper, and
+safer. For a system consuming paid API credit, deterministic behaviour is essential.
 
 ---
 
@@ -431,4 +494,4 @@ That project provides:
 
 ## Licence
 
-MIT
+Released under the MIT License.
